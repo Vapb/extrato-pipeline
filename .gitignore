@@ -1,0 +1,17 @@
+# Dados financeiros — nunca subir
+data/
+
+# Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# IDEs
+.vscode/
+.idea/
