@@ -135,8 +135,22 @@ def process_pdf(pdf_path: Path) -> pd.DataFrame:
     return df
 
 
+def person_from_path(path: Path) -> str:
+    parts = Path(path).resolve().parts
+    try:
+        idx = next(i for i, p in enumerate(parts) if p == "raw_data")
+        return parts[idx + 1]
+    except (StopIteration, IndexError):
+        raise ValueError(
+            f"Estrutura de caminho inválida: {path}\n"
+            "Esperado: raw_data/{pessoa}/banco/modalidade/arquivo.pdf"
+        )
+
+
 def save_csv(df: pd.DataFrame, pdf_path: Path) -> Path:
-    out = Path(f"data/bronze/santander/debito/{pdf_path.stem}.csv")
+    person = person_from_path(pdf_path)
+    year_month = competencia_from_path(pdf_path).replace("-", "_")
+    out = Path(f"data/bronze/{person}/santander/debito/{year_month}_santander_debito.csv")
     out.parent.mkdir(parents=True, exist_ok=True)
     df_out = df.copy()
     df_out["data"] = pd.to_datetime(df_out["data"], dayfirst=True).dt.strftime("%d/%m/%Y")

@@ -83,14 +83,26 @@ def split_transactions_by_month(transactions):
     return grouped
 
 
-def write_monthly_csvs(grouped_transactions, bank, account_type):
+def person_from_path(path: Path) -> str:
+    parts = Path(path).resolve().parts
+    try:
+        idx = next(i for i, p in enumerate(parts) if p == "raw_data")
+        return parts[idx + 1]
+    except (StopIteration, IndexError):
+        raise ValueError(
+            f"Estrutura de caminho inválida: {path}\n"
+            "Esperado: raw_data/{pessoa}/banco/modalidade/arquivo.pdf"
+        )
+
+
+def write_monthly_csvs(grouped_transactions, bank, account_type, person):
     for year_month, transactions in grouped_transactions.items():
 
-        output_dir = Path(f"data/bronze/{bank}/{account_type}")
+        output_dir = Path(f"data/bronze/{person}/{bank}/{account_type}")
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        output_path = output_dir / f"{year_month}.csv"
+        output_path = output_dir / f"{year_month}_{bank}_{account_type}.csv"
 
         with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
 
@@ -118,9 +130,10 @@ def main():
         logger.error(f"Arquivo não encontrado: " f"{pdf_path}")
         raise FileNotFoundError(f"Arquivo não encontrado: " f"{pdf_path}")
 
+    person = person_from_path(pdf_path)
     transactions = parse_pdf(pdf_path)
     grouped_transactions = split_transactions_by_month(transactions)
-    write_monthly_csvs(grouped_transactions, bank="itau", account_type="debito")
+    write_monthly_csvs(grouped_transactions, bank="itau", account_type="debito", person=person)
 
     logger.info("Processo finalizado")
 
