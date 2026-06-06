@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPTS_DIR="$(dirname "$0")"
-
-bash "$SCRIPTS_DIR/00_itau_credito.sh"
-bash "$SCRIPTS_DIR/00_itau_debito.sh"
-bash "$SCRIPTS_DIR/00_santander_debito.sh"
+echo "=== Bronze — extração PDF → CSV ==="
+python src/bronze.py
 
 echo ""
-echo "=== Todos os extratos processados ==="
+echo "=== Silver — normalização ==="
+python src/silver.py
+
+echo ""
+echo "=== Pipeline concluído ==="
