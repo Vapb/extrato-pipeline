@@ -1,161 +1,247 @@
 import re
-from collections import defaultdict
-from pathlib import Path
 
 import pandas as pd
-import pdfplumber
 
-VALUE_RE  = re.compile(r"-?[\d\.]+,\d{2}")
-DATE_RE   = re.compile(r"^\d{2}/\d{2}$")
-COL_SPLIT = 355
+_STRIP_RE        = re.compile(r"\*\*|~~")
+_DATE_RE         = re.compile(r"^(\d{2}/\d{2})$")
+_VALUE_RE        = re.compile(r"^-?[\d\.]+,\d{2}$")
+_VALOR_HEADER_RE = re.compile(r"^VALOR EM R\$\s*(\d{2}/\d{2})$", re.IGNORECASE)
+_PARCELA_RE      = re.compile(r"(\d{2}/\d{2})$")   # trailing installment counter
 
-SKIP_LEFT  = ["data estabelecimento", "lançamentos inter", "total para", "lançamentos produtos"]
-SKIP_RIGHT = [
-    "data estabelecimento", "data produtos", "titular", "lançamentos produtos",
-    "dólar de conversão", "total transações", "repasse de iof",
-    "próxima fatura", "demais faturas", "total para", "continua", "lançamentos inter",
-]
+_STOP_MARKERS = {
+    "compras parceladas-próximas faturas",
+    "compras parceladas- próximas faturas",
+    "compras parceladas - próximas faturas",
+    "próxima fatura",
+    "demais faturas",
+    "total para próximas faturas",
+}
 
+_SKIP_EXACT = {
+    "data", "estabelecimento", "produtos/serviços",
+    "valor em r$", "us$ r$", "brl",
+    "l", "s", "=",
+}
 
-def br_float(s: str) -> float:
-    neg = s.strip().startswith("-")
-    s = re.sub(r"[^\d,]", "", s).replace(",", ".")
-    return (-1 if neg else 1) * float(s) if s else 0.0
-
-
-def last_value(line: str) -> float | None:
-    if m := re.search(r"-\s+([\d\.]+,\d{2})$", line):
-        return -br_float(m.group(1))
-    nums = VALUE_RE.findall(line)
-    return br_float(nums[-1]) if nums else None
-
-
-def group_rows(words: list, height: float, tol: int = 3) -> dict:
-    rows: dict = defaultdict(list)
-    for w in words:
-        if w["top"] <= height:
-            rows[round(w["top"] / tol) * tol].append(w)
-    return {k: sorted(v, key=lambda x: x["x0"]) for k, v in sorted(rows.items())}
-
-
-def _competencia_from_path(path: Path) -> str:
-    if m := re.search(r"(20\d{2})_(\d{2})", path.stem):
-        return f"{m.group(1)}-{m.group(2)}"
-    raise ValueError(f"Não foi possível detectar ano/mês em: {path.stem}")
-
-
-def _contains(pattern: str, text: str) -> bool:
-    return pattern in text or pattern.replace(" ", "") in text.replace(" ", "")
+_SKIP_PREFIXES = (
+    "lançamentos",
+    "total ",
+    "titular",
+    "victor",
+    "ana ",
+    "pagamento",
+    "saldo",
+    "dólar",
+    "repasse",
+    "juros",
+    "cet",
+    "próxima",
+    "demais",
+    "esses",
+    "o limite",
+    "resumo",
+)
 
 
-def _flush(current: dict | None, records: list) -> None:
-    if current:
-        records.append(current)
+def _clean(s: str) -> str:
+    return _STRIP_RE.sub("", s).strip()
 
 
-def _make_record(comp, date_token, year, line, ws_tail, secao) -> dict:
-    nums = VALUE_RE.findall(line)
-    desc = " ".join(w["text"] for w in ws_tail)
-    for n in nums:
-        desc = desc.replace(n, "").strip()
-    desc = re.sub(r"\s*\d{2}/\d{2}\s*$", "", desc).strip().strip("-").strip()
-    val = last_value(line)
-    return dict(competencia=comp, data=f"{date_token}/{year}",
-                descricao=desc, categoria=None,
-                valor=-val if val is not None else None, secao=secao)
+def _norm_val(s: str) -> str:
+    """'- 0,03' → '-0,03' (space between minus and digits)."""
+    return re.sub(r"^-\s+", "-", s.strip())
 
 
-def _parse_national(rows: dict, comp: str) -> list[dict]:
-    year, records, current = comp[:4], [], None
-    section = "nacional"
+def _is_value(s: str) -> bool:
+    return bool(_VALUE_RE.match(_norm_val(s)))
 
-    for ws in rows.values():
-        left = [w for w in ws if 140 <= w["x0"] < COL_SPLIT]
-        if not left:
+
+def _parse_val(s: str) -> float:
+    s = _norm_val(s)
+    return float(s.replace(".", "").replace(",", "."))
+
+
+def _should_skip(s: str) -> bool:
+    low = s.lower()
+    return (
+        len(low) <= 1
+        or low in _SKIP_EXACT
+        or any(low.startswith(p) for p in _SKIP_PREFIXES)
+    )
+
+
+def _all_cell_parts(text: str) -> list[str]:
+    raw: list[str] = []
+    for line in text.splitlines():
+        if not line.startswith("|") or "<br>" not in line:
             continue
-        line = " ".join(w["text"] for w in left)
-        low = line.lower()
+        for col in line.split("|")[1:-1]:
+            cleaned = _clean(col)
+            if cleaned:
+                for p in cleaned.split("<br>"):
+                    p = _clean(p)
+                    if p:
+                        raw.append(p)
 
-        if _contains("compras parceladas", low):
-            _flush(current, records); current = None; break
+    # split "VALOR EM R$ DD/MM" into header token + extracted date
+    parts: list[str] = []
+    for p in raw:
+        m = _VALOR_HEADER_RE.match(p)
+        if m:
+            parts.append("VALOR EM R$")   # skipped by _SKIP_EXACT
+            parts.append(m.group(1))       # standalone date for first transaction
+        else:
+            parts.append(p)
+    return parts
 
-        if _contains("lançamentos no cartão", low):
-            _flush(current, records); current = None; continue
 
-        if _contains("produtos e serviços", low) and not _contains("data produtos", low):
-            _flush(current, records); current = None; section = "servico"; continue
+def _split_sections(parts: list[str]) -> tuple[list[str], list[str]]:
+    # use startswith so merged strings like "Lançamentos internacionaisVICTOR..."
+    # (no <br> between them in some months) are still detected
+    try:
+        idx = next(
+            i for i, p in enumerate(parts)
+            if p.lower().startswith("lançamentos internacionais")
+        )
+        return parts[:idx], parts[idx + 1:]
+    except StopIteration:
+        return parts, []
 
-        if any(_contains(s, low) for s in SKIP_LEFT):
-            _flush(current, records); current = None; continue
 
-        if DATE_RE.match(left[0]["text"]) and left[0]["x0"] < 175:
-            _flush(current, records)
-            current = _make_record(comp, left[0]["text"], year, line, left[1:], section)
-        elif current and line.strip() and not any(s in low for s in ["total", "continua", "titular"]):
-            if current["categoria"] is None:
-                current["categoria"] = line.strip()
+def _parse_transaction(tx_parts: list[str]) -> tuple[str, float | None, str | None, str]:
+    desc, valor, categoria = "", None, None
+    for p in tx_parts:
+        if _is_value(p) and valor is None:
+            valor = _parse_val(p)
+        elif valor is None:
+            if not _DATE_RE.match(p) and not _should_skip(p) and not desc:
+                desc = p
+        else:
+            if not _DATE_RE.match(p) and not _is_value(p) and not _should_skip(p):
+                if not categoria and len(p) < 50:
+                    categoria = p
 
-    _flush(current, records)
+    # extract trailing installment counter from description ("AOMORI - LO04/10" → "04/10")
+    parcela = "1/1"
+    if desc:
+        m = _PARCELA_RE.search(desc)
+        if m:
+            parcela = m.group(1)
+            desc = desc[:m.start()].strip()
+
+    return desc, valor, categoria, parcela
+
+
+def _extract_fatura_total(parts: list[str]) -> float | None:
+    for i, p in enumerate(parts):
+        if "total dos lançamentos atuais" in p.lower():
+            if i + 1 < len(parts) and _is_value(parts[i + 1]):
+                return abs(_parse_val(parts[i + 1]))
+    return None
+
+
+def _extract_iof_total(parts: list[str]) -> float | None:
+    for i, p in enumerate(parts):
+        if "total lançamentos inter" in p.lower():
+            if i + 1 < len(parts) and _is_value(parts[i + 1]):
+                return _parse_val(parts[i + 1])
+    return None
+
+
+def _norm_desc(desc: str) -> str:
+    """Strip trailing installment counter 'DD/MM' for deduplication."""
+    return re.sub(r"\s*\d{2}/\d{2}\s*$", "", desc).strip()
+
+
+def _parse_section(parts: list[str], year: str, comp: str, secao: str) -> list[dict]:
+    records: list[dict] = []
+    i = 0
+    current_secao = secao
+
+    while i < len(parts):
+        p = parts[i]
+
+        if p.lower() in _STOP_MARKERS:
+            break
+
+        # switch to "servico" when the services sub-section starts
+        if "produtos e serviços" in p.lower() and "data" not in p.lower():
+            current_secao = "servico"
+            i += 1
+            continue
+
+        if not _DATE_RE.match(p):
+            i += 1
+            continue
+
+        date = f"{p}/{year}"
+        i += 1
+
+        # collect tokens until the NEXT date — but only break on date if we
+        # already have a value (installment counters like 02/10 also look like dates)
+        tx_parts: list[str] = []
+        while i < len(parts):
+            token = parts[i]
+            if token.lower() in _STOP_MARKERS:
+                i = len(parts)
+                break
+            # section-change marker: let outer loop handle it
+            if "produtos e serviços" in token.lower() and "data" not in token.lower():
+                break
+            has_value = any(_is_value(t) for t in tx_parts)
+            if _DATE_RE.match(token) and has_value:
+                break
+            tx_parts.append(token)
+            i += 1
+
+        desc, valor, categoria, parcela = _parse_transaction(tx_parts)
+
+        if desc and valor is not None:
+            records.append({
+                "competencia": comp,
+                "data":        date,
+                "descricao":   desc,
+                "categoria":   categoria,
+                "valor":       -valor,
+                "secao":       current_secao,
+                "parcela":     parcela,
+            })
+
     return records
 
 
-def _parse_international(rows: dict, comp: str) -> list[dict]:
-    year, records, current = comp[:4], [], None
-    section, iof_total = "pre", None
+def parse_markdown(text: str, competencia: str) -> pd.DataFrame:
+    year      = competencia[:4]
+    all_parts = _all_cell_parts(text)
+    nac_parts, inter_parts = _split_sections(all_parts)
 
-    for ws in rows.values():
-        right = [w for w in ws if w["x0"] >= COL_SPLIT]
-        if not right:
-            continue
-        line = " ".join(w["text"] for w in right)
-        low = line.lower()
+    nac_records   = _parse_section(nac_parts,   year, competencia, "nacional")
+    inter_records = _parse_section(inter_parts, year, competencia, "internacional")
 
-        if "total lançamentos inter" in low:
-            if nums := VALUE_RE.findall(line):
-                iof_total = br_float(nums[-1])
-            continue
+    # use BRL+IOF total when there is exactly one international purchase
+    inter_purchases = [r for r in inter_records if r["secao"] == "internacional"]
+    iof_total = _extract_iof_total(inter_parts)
+    if iof_total is not None and len(inter_purchases) == 1:
+        inter_purchases[0]["valor"] = -iof_total
 
-        if section == "pre":
-            if "lançamentos internacionais" in low:
-                section = "internacional"
-            continue
+    records = nac_records + inter_records
 
-        if "produtos e serviços" in low and "data" not in low:
-            _flush(current, records); current = None; section = "servico"; continue
-
-        if "compras parceladas" in low or "total dos lançamentos" in low:
-            _flush(current, records); break
-
-        if any(s in low for s in SKIP_RIGHT):
-            continue
-
-        if DATE_RE.match(right[0]["text"]) and right[0]["x0"] < 430:
-            _flush(current, records)
-            current = _make_record(comp, right[0]["text"], year, line, right[1:], section)
-        elif current and line.strip() and current["categoria"] is None:
-            current["categoria"] = line.strip()
-
-    _flush(current, records)
-
-    inter = [r for r in records if r["secao"] == "internacional"]
-    if iof_total is not None and len(inter) == 1:
-        inter[0]["valor"] = -iof_total
-
-    return records
-
-
-def process_pdf(pdf_path: Path) -> pd.DataFrame:
-    comp = _competencia_from_path(pdf_path)
-    nac, inter = [], []
-
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages[1:]:
-            rows = group_rows(page.extract_words(), page.height)
-            nac.extend(_parse_national(rows, comp))
-            inter.extend(_parse_international(rows, comp))
-
-    records = nac + inter
-    print(f"  {pdf_path.name}: nacionais={len(nac)} inter/serviço={len(inter)} total={len(records)}")
+    # some months pack current + next-month installments in the same block before
+    # the stop marker (e.g. April). detect this by comparing against the fatura
+    # total: if the parsed sum diverges by more than 1%, deduplicate via
+    # normalised description (strips installment counter like "06/10" → same key).
+    fatura_total = _extract_fatura_total(all_parts)
+    parsed_total = abs(sum(r["valor"] for r in records))
+    if fatura_total and parsed_total > 0 and abs(parsed_total / fatura_total - 1.0) > 0.01:
+        # description is already clean (installment stripped), so use it directly
+        seen: set = set()
+        deduped: list[dict] = []
+        for r in records:
+            key = (r["data"], r["descricao"], r["valor"])
+            if key not in seen:
+                seen.add(key)
+                deduped.append(r)
+        records = deduped
 
     if not records:
         return pd.DataFrame()

@@ -2,37 +2,24 @@ import re
 from pathlib import Path
 
 import pandas as pd
-import pdfplumber
 
-LINE_REGEX    = re.compile(r"^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?[\d\.]+,\d{2})$")
-IGNORED_TERMS = ["SALDO DO DIA"]
-
-
-def _should_ignore(line: str) -> bool:
-    return any(term in line.upper() for term in IGNORED_TERMS)
+# |DD/MM/YYYY|description|**value**||  — transaction row
+_ROW_RE  = re.compile(r"^\|(\d{2}/\d{2}/\d{4})\|(.+?)\|\*\*(-?[\d\.,]+)\*\*\|\|")
+_SKIP    = {"SALDO DO DIA"}
 
 
-def process_pdf(pdf_path: Path) -> pd.DataFrame:
+def parse_markdown(text: str, competencia: str = "") -> pd.DataFrame:
     records = []
-
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if not text:
-                continue
-            for line in text.split("\n"):
-                line = line.strip()
-                if not line or _should_ignore(line):
-                    continue
-                m = LINE_REGEX.match(line)
-                if not m:
-                    continue
-                data, descricao, valor = m.groups()
-                records.append({
-                    "data":      data,
-                    "descricao": descricao.strip(),
-                    "valor":     float(valor.replace(".", "").replace(",", ".")),
-                })
-
-    print(f"  {pdf_path.name}: transações={len(records)}")
+    for line in text.splitlines():
+        m = _ROW_RE.match(line)
+        if not m:
+            continue
+        date, desc, valor_str = m.group(1), m.group(2).strip(), m.group(3)
+        if desc.upper() in _SKIP:
+            continue
+        records.append({
+            "data":      date,
+            "descricao": desc,
+            "valor":     float(valor_str.replace(".", "").replace(",", ".")),
+        })
     return pd.DataFrame(records) if records else pd.DataFrame()

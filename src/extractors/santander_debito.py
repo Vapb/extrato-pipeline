@@ -1,119 +1,95 @@
 import re
-from collections import defaultdict
-from pathlib import Path
 
 import pandas as pd
-import pdfplumber
 
-DATE_RE  = re.compile(r"^\d{2}/\d{2}$")
-VALUE_RE = re.compile(r"\d[\d\.]*,\d{2}-?$")
+_STRIP_RE  = re.compile(r"\*\*|~~")
+_ROW_RE    = re.compile(r"^\|([^|]+)\|\|$")         # |content|| — [^|] prevents matching multi-column rows
+_DATE_RE   = re.compile(r"^(\d{2}/\d{2})\s*$")
+_VALUE_RE  = re.compile(r"^(\d[\d\.]*,\d{2})(-?)$")
 
-DATE_MAX = 50
-DESC_MAX = 295
-VAL_MIN  = 408
-BAL_MIN  = 508
-
-SKIP_DESC     = {"descrição", "movimentação", "conta corrente"}
-SKIP_PREFIXES = ("resumo -", "extrato")
+_SKIP_DESC = {"saldo em", "descrição", "movimentação", "conta corrente", "---"}
 
 
-def _parse_value(s: str | None) -> float | None:
-    if not s:
-        return None
-    s = s.strip()
-    if not VALUE_RE.search(s):
-        return None
-    neg = s.endswith("-")
-    cleaned = re.sub(r"[^\d,]", "", s).replace(",", ".")
-    return (-1 if neg else 1) * float(cleaned) if cleaned else None
+def _clean(s: str) -> str:
+    return _STRIP_RE.sub("", s).strip()
 
 
-def _group_rows(words: list, height: float, tol: int = 3) -> dict:
-    rows: dict = defaultdict(list)
-    for w in words:
-        if w["top"] <= height:
-            rows[round(w["top"] / tol) * tol].append(w)
-    return {k: sorted(v, key=lambda x: x["x0"]) for k, v in sorted(rows.items())}
+def _extract_value(parts: list[str]) -> tuple[float | None, bool]:
+    """Returns (valor, is_negative) scanning left-to-right through parts."""
+    for i, p in enumerate(parts):
+        m = _VALUE_RE.match(p)
+        if m:
+            valor = float(m.group(1).replace(".", "").replace(",", "."))
+            neg = m.group(2) == "-"
+            # strikethrough format: value and dash are separate parts
+            if not neg and i + 1 < len(parts) and parts[i + 1] == "-":
+                neg = True
+            return valor, neg
+    return None, False
 
 
-def _competencia_from_path(path: Path) -> str:
-    if m := re.search(r"(20\d{2})_(\d{2})", path.stem):
-        return f"{m.group(1)}-{m.group(2)}"
-    raise ValueError(f"Não foi possível detectar ano/mês em: {path.stem}")
+def _build_desc(parts: list[str]) -> str:
+    """Collects description tokens before the first numeric value."""
+    desc_parts = []
+    for p in parts:
+        if _VALUE_RE.match(p):
+            break
+        if p not in ("-", "") and not re.match(r"^\d{6,}$", p):
+            desc_parts.append(p)
+    return " ".join(desc_parts).strip()
 
 
-def _should_skip(desc: str) -> bool:
-    low = desc.lower()
-    return low in SKIP_DESC or any(low.startswith(p) for p in SKIP_PREFIXES)
-
-
-def process_pdf(pdf_path: Path) -> pd.DataFrame:
-    comp = _competencia_from_path(pdf_path)
-    year = comp[:4]
-    records = []
-    current: dict | None = None
+def parse_markdown(text: str, competencia: str) -> pd.DataFrame:
+    year = competencia[:4]
+    records: list[dict] = []
     last_date: str | None = None
-    done = False
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            if done:
-                break
-            rows = _group_rows(page.extract_words(), page.height)
+    for line in text.splitlines():
+        m = _ROW_RE.match(line)
+        if not m:
+            continue
 
-            for ws in rows.values():
-                date_ws = [w for w in ws if w["x0"] < DATE_MAX]
-                desc_ws = [w for w in ws if DATE_MAX <= w["x0"] < DESC_MAX]
-                val_ws  = [w for w in ws if VAL_MIN  <= w["x0"] < BAL_MIN]
+        # stop at closing balance ("SALDO EM DD/MM") — only after some records exist
+        first_part = _clean(m.group(1).split("<br>")[0])
+        if first_part.lower().startswith("saldo em") and records:
+            break
 
-                date_text = date_ws[0]["text"] if date_ws and DATE_RE.match(date_ws[0]["text"]) else None
-                desc_text = " ".join(w["text"] for w in desc_ws).strip()
-                val_text  = next((w["text"] for w in reversed(val_ws) if VALUE_RE.search(w["text"])), None)
+        cell  = m.group(1)
+        parts = [_clean(p) for p in cell.split("<br>") if _clean(p)]
+        if not parts:
+            continue
 
-                if not desc_text:
-                    continue
+        # determine date and remaining parts
+        dm = _DATE_RE.match(parts[0])
+        if dm:
+            last_date    = f"{dm.group(1)}/{year}"
+            data_parts   = parts[1:]
+        else:
+            data_parts   = parts
 
-                # closing balance marks end of transactions
-                if desc_text.lower().startswith("saldo em") and (records or current):
-                    if current:
-                        records.append(current)
-                    current = None
-                    done = True
-                    break
+        if not data_parts or last_date is None:
+            continue
 
-                if _should_skip(desc_text):
-                    continue
+        valor, neg = _extract_value(data_parts)
 
-                if date_text:
-                    if current:
-                        records.append(current)
-                    last_date = date_text
-                    valor = _parse_value(val_text)
-                    current = {
-                        "competencia": comp,
-                        "data":        f"{date_text}/{year}",
-                        "descricao":   desc_text,
-                        "valor":       valor,
-                    } if valor else None
+        if valor is None:
+            # description continuation — append to last record
+            extra = " ".join(p for p in data_parts if p not in ("-",) and re.search(r"[A-Za-zÀ-ÿ]", p))
+            if records and extra:
+                records[-1]["descricao"] += " " + extra
+            continue
 
-                elif val_text:
-                    if current:
-                        records.append(current)
-                    current = {
-                        "competencia": comp,
-                        "data":        f"{last_date}/{year}" if last_date else None,
-                        "descricao":   desc_text,
-                        "valor":       _parse_value(val_text),
-                    }
+        desc = _build_desc(data_parts)
 
-                elif current and re.search(r"[A-Za-zÀ-ÿ]", desc_text):
-                    current["descricao"] += " " + desc_text
+        if not desc or any(desc.lower().startswith(s) for s in _SKIP_DESC):
+            continue
 
-    if current:
-        records.append(current)
-
-    total = sum(r["valor"] for r in records if r["valor"])
-    print(f"  {pdf_path.name}: transações={len(records)} saldo=R${total:,.2f}")
+        records.append({
+            "competencia": competencia,
+            "data":        last_date,
+            "descricao":   desc,
+            "valor":       -valor if neg else valor,
+        })
 
     if not records:
         return pd.DataFrame()
