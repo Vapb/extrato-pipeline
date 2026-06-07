@@ -27,8 +27,6 @@ _SKIP_PREFIXES = (
     "lançamentos",
     "total ",
     "titular",
-    "victor",
-    "ana ",
     "pagamento",
     "saldo",
     "dólar",

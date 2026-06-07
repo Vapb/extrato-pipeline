@@ -13,7 +13,7 @@ import silver
 
 def main():
     parser = argparse.ArgumentParser(description="extrato-pipeline")
-    parser.add_argument("--owner", help="Filtrar por owner (ex: victor, ana)")
+    parser.add_argument("--owner", help="Filtrar por owner (ex: person1, person2)")
     parser.add_argument("--layer", choices=["bronze", "silver"], help="Rodar só uma camada")
     args = parser.parse_args()
 

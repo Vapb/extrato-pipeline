@@ -78,7 +78,7 @@ def run(owner_filter: str | None = None) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Silver layer — normaliza CSVs bronze")
-    parser.add_argument("--owner", help="Processar só um owner (ex: victor, ana)")
+    parser.add_argument("--owner", help="Processar só um owner (ex: person1, person2)")
     args = parser.parse_args()
     run(owner_filter=args.owner)
 
