@@ -13,6 +13,25 @@ SILVER_COLS = [
     "categoria", "secao", "parcela", "moeda",
 ]
 
+# Itaú débito appends a transaction date code to every description:
+#   RSHOP entries  → trailing DDMM  e.g. "RSHOP SABOR A KILO2001"  → "RSHOP SABOR A KILO"
+#   PIX/other      → trailing DD/MM e.g. "PIX TRANSF OTAVIO 02/01"  → "PIX TRANSF OTAVIO"
+_RSHOP_DATE_RE = re.compile(r"\d{4}$")
+_PIX_DATE_RE   = re.compile(r"\s*\d{2}/\d{2}$")
+
+
+def _clean_desc(descricao: str, bank: str, account_type: str) -> str:
+    if bank != "itau":
+        return descricao
+    if account_type == "debito":
+        upper = descricao.upper()
+        if upper.startswith("RSHOP"):
+            return _RSHOP_DATE_RE.sub("", descricao).strip()
+        return _PIX_DATE_RE.sub("", descricao).strip()
+    if account_type == "credito":
+        return _PIX_DATE_RE.sub("", descricao).strip()
+    return descricao
+
 
 def _normalize(df: pd.DataFrame, owner: str, bank: str, account_type: str, comp: str) -> pd.DataFrame:
     df = df.copy()
@@ -26,6 +45,17 @@ def _normalize(df: pd.DataFrame, owner: str, bank: str, account_type: str, comp:
         df["competencia"] = comp
 
     df["data"] = pd.to_datetime(df["data"], dayfirst=True, errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # credit transactions from prior months appear on the current statement
+    # (installments started before). clamp any date before the competencia
+    # to the first day of the competencia so it stays in the right month.
+    if account_type == "credito":
+        comp_start = f"{comp}-01"
+        df["data"] = df["data"].apply(
+            lambda d: comp_start if pd.notna(d) and str(d) < comp_start else d
+        )
+
+    df["descricao"] = df["descricao"].apply(lambda d: _clean_desc(str(d), bank, account_type))
 
     if "categoria" not in df.columns:
         df["categoria"] = None
