@@ -67,7 +67,7 @@ The PDF layout makes this extractor non-trivial. Understand these before touchin
 
 **`_all_cell_parts`** flattens all `<br>`-separated content from every Markdown table cell into a flat list, then splits `"VALOR EM R$ DD/MM"` header tokens so the embedded date becomes a standalone entry (needed to recover the first transaction whose date is fused with the column header).
 
-**`_split_sections`** divides the flat list into `(nac_parts, inter_parts)` at the first token that `startswith("lançamentos internacionais")`. Uses `startswith` because some months merge the header with the cardholder name (`"Lançamentos internacionaisVICTOR A P..."`) with no `<br>`.
+**`_split_sections`** divides the flat list into `(nac_parts, inter_parts)` at the first token that `startswith("lançamentos internacionais")`. Uses `startswith` because some months merge the header with the cardholder name (`"Lançamentos internacionaisPERSON A P..."`) with no `<br>`.
 
 **`_parse_section`** walks the parts list date-by-date. The inner `tx_parts` collector only breaks on a new date **if a value has already been found** — this prevents installment counters like `02/10` (which match `DD/MM`) from prematurely ending transaction collection.
 
