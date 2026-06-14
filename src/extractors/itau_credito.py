@@ -94,7 +94,7 @@ def _all_cell_parts(text: str) -> list[str]:
 
 
 def _split_sections(parts: list[str]) -> tuple[list[str], list[str]]:
-    # use startswith so merged strings like "Lançamentos internacionaisVICTOR..."
+    # use startswith so merged strings like "Lançamentos internacionaisPERSON..."
     # (no <br> between them in some months) are still detected
     try:
         idx = next(
@@ -172,7 +172,12 @@ def _parse_section(parts: list[str], year: str, comp: str, secao: str) -> list[d
             i += 1
             continue
 
-        date = f"{p}/{year}"
+        # if transaction month is later than competencia month the transaction
+        # belongs to the previous year (e.g. Nov in a Jan statement → year-1)
+        tx_month   = int(p.split("/")[1])
+        comp_month = int(comp.split("-")[1])
+        tx_year    = int(year) - (1 if tx_month > comp_month else 0)
+        date = f"{p}/{tx_year}"
         i += 1
 
         # collect tokens until the NEXT date — but only break on date if we
