@@ -1,12 +1,8 @@
 """
-Fluxo de atualização do merchant_map.json a partir dos JSONs gold.
+Sincroniza gold JSONs → merchant_maps/YYYY-MM.json
 
-Comportamento:
-  - Se merchant_map.json não existe → cria com esqueleto padrão
-  - Se existe → adiciona/atualiza entradas:
-      * Entrada nova → adiciona (mesmo que Pendente)
-      * Entrada com valor real no merchant_map → mantém (não sobrescreve)
-      * Entrada Pendente no merchant_map + valor real no gold → atualiza
+Só escreve entradas reais (não Pendente). Entradas em nao_mapear.json são ignoradas.
+Detecta quando a mesma chave aparece com valores diferentes em meses distintos.
 
 Uso:
     python src/merchant_map.py
@@ -18,65 +14,45 @@ import json
 import re
 from pathlib import Path
 
+GOLD_ROOT         = Path("data/gold")
+MERCHANT_MAPS_DIR = Path("data/merchant_maps")
+NAO_MAPEAR_PATH   = MERCHANT_MAPS_DIR / "nao_mapear.json"
+
 _INSTALLMENT_RE = re.compile(r"\s*\d{2}/\d{2}$")
 
-GOLD_ROOT         = Path("data/gold")
-MERCHANT_MAP_PATH = Path("data/merchant_map.json")
 
-_DEFAULT_CATEGORIAS = [
-    "Restaurante",
-    "Mercado",
-    "Casa",
-    "Gatos",
-    "Bernardo",
-    "Assinatura",
-    "Saude",
-    "Investimento",
-    "Recebimento",
-    "Transferencia",
-    "Cartao",
-    "Outro",
-]
+def _load_nao_mapear() -> list[str]:
+    if not NAO_MAPEAR_PATH.exists():
+        return []
+    return json.loads(NAO_MAPEAR_PATH.read_text(encoding="utf-8")).get("nao_mapear", [])
 
 
-def _skeleton() -> dict:
-    return {
-        "_meta": {
-            "descricao": "Mapeamento de lançamentos bancários → categoria + nome simplificado",
-            "formato_chave": "substring do nome_original (case-insensitive)",
-            "uso": "match por substring — se a chave estiver contida no nome_original, o mapeamento é aplicado",
-        },
-        "categorias_validas": _DEFAULT_CATEGORIAS,
-        "mapeamentos": {},
-    }
+def _is_nao_mapear(key: str, nao_mapear: list[str]) -> bool:
+    low = key.lower()
+    return any(entry.lower() in low for entry in nao_mapear)
 
 
-def _is_real(val: dict | None) -> bool:
-    """True se a entrada tem valores reais (não Pendente/null)."""
-    if not val:
-        return False
-    return val.get("nome_simplificado") not in (None, "Pendente")
+def _load_month_map(month: str) -> dict:
+    path = MERCHANT_MAPS_DIR / f"{month}.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8")).get("mapeamentos", {})
+    return {}
 
 
-def _match_real(nome_original: str, mappings: dict) -> bool:
-    """True se nome_original já está coberto por uma entrada real no merchant_map."""
-    low = nome_original.lower()
-    return any(key.lower() in low and _is_real(val) for key, val in mappings.items())
+def _save_month_map(month: str, mapeamentos: dict) -> None:
+    MERCHANT_MAPS_DIR.mkdir(parents=True, exist_ok=True)
+    path = MERCHANT_MAPS_DIR / f"{month}.json"
+    path.write_text(
+        json.dumps({"mes": month, "mapeamentos": mapeamentos}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def update(owner_filter: str | None = None, month_filter: str | None = None) -> None:
-    if MERCHANT_MAP_PATH.exists():
-        merchant = json.loads(MERCHANT_MAP_PATH.read_text(encoding="utf-8"))
-        mode = "atualizado"
-    else:
-        merchant = _skeleton()
-        mode = "criado"
-        print(f"merchant_map.json nao encontrado — criando novo em {MERCHANT_MAP_PATH}")
+    nao_mapear = _load_nao_mapear()
 
-    mappings = merchant.setdefault("mapeamentos", {})
-
-    candidates: dict[str, dict] = {}
-    conflicts:  dict[str, list] = {}
+    # Coleta entradas reais dos gold JSONs, agrupadas por mês
+    by_month: dict[str, dict[str, dict]] = {}
 
     for json_path in sorted(GOLD_ROOT.glob("*/*.json")):
         owner = json_path.parent.name
@@ -92,69 +68,73 @@ def update(owner_filter: str | None = None, month_filter: str | None = None) -> 
             nome_simpl = entry.get("nome_simplificado") or "Pendente"
             categoria  = entry.get("categoria") or "Pendente"
 
-            if not nome_orig:
+            if not nome_orig or nome_simpl == "Pendente" or categoria == "Pendente":
                 continue
 
             key = _INSTALLMENT_RE.sub("", nome_orig).strip()
-            if not key:
+            if not key or _is_nao_mapear(key, nao_mapear):
                 continue
 
-            # já coberto por valor real no merchant_map → não toca
-            if _match_real(key, mappings):
-                continue
+            by_month.setdefault(month, {})[key] = {
+                "nome_simplificado": nome_simpl,
+                "categoria": categoria,
+            }
 
-            val = {"nome_simplificado": nome_simpl, "categoria": categoria, "_source": f"{owner}/{month}"}
-
-            if key not in candidates:
-                candidates[key] = val
-            elif candidates[key]["nome_simplificado"] != nome_simpl or candidates[key]["categoria"] != categoria:
-                existing = candidates[key]
-                # valor real vence Pendente
-                if existing["nome_simplificado"] == "Pendente" and nome_simpl != "Pendente":
-                    candidates[key] = val
-                elif nome_simpl == "Pendente":
-                    pass  # mantém o que já temos (real ou Pendente)
-                else:
-                    # dois valores reais distintos → conflito
-                    conflicts.setdefault(key, [existing]).append(val)
-
-    for key in conflicts:
-        candidates.pop(key, None)
-        print(f"  [CONFLITO] {key!r} tem valores distintos entre meses — resolva manualmente")
-
-    if not candidates:
-        print("Nenhuma entrada nova. merchant_map.json nao alterado.")
-        if mode == "criado":
-            MERCHANT_MAP_PATH.write_text(
-                json.dumps(merchant, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            print(f"Esqueleto salvo em {MERCHANT_MAP_PATH}")
+    if not by_month:
+        print("Nenhuma entrada real encontrada nos gold JSONs.")
         return
 
-    added = updated = 0
-    for key, val in sorted(candidates.items()):
-        existing = mappings.get(key)
-        if existing and not _is_real(existing) and _is_real(val):
-            mappings[key] = val
-            print(f"  ~ {key!r}  Pendente -> {val['nome_simplificado']!r}  ({val['categoria']})")
-            updated += 1
-        elif key not in mappings:
-            mappings[key] = val
-            status = val['nome_simplificado']
-            print(f"  + {key!r}  ->  {status!r}  ({val['categoria']})")
-            added += 1
+    # Carrega todos os mapas existentes para detecção de conflitos
+    all_existing: dict[str, dict] = {
+        path.stem: json.loads(path.read_text(encoding="utf-8")).get("mapeamentos", {})
+        for path in sorted(MERCHANT_MAPS_DIR.glob("????-??.json"))
+    }
 
-    MERCHANT_MAP_PATH.write_text(
-        json.dumps(merchant, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    print(f"\nmerchant_map.json {mode}: {added} adicionado(s), {updated} atualizado(s)")
+    total_added = total_updated = 0
+
+    for month, new_entries in sorted(by_month.items()):
+        existing_map = _load_month_map(month)
+        added = updated = 0
+
+        for key, val in sorted(new_entries.items()):
+            # Detecta conflito com outros meses
+            for other_month, other_map in all_existing.items():
+                if other_month == month:
+                    continue
+                other_val = other_map.get(key)
+                if other_val and other_val != val:
+                    print(
+                        f"  [DUP] {key!r}: {other_val['nome_simplificado']!r} ({other_month})"
+                        f" vs {val['nome_simplificado']!r} ({month})"
+                    )
+
+            existing = existing_map.get(key)
+            if existing is None:
+                existing_map[key] = val
+                print(f"  + [{month}] {key!r}  ->  {val['nome_simplificado']!r}  ({val['categoria']})")
+                added += 1
+            elif existing != val:
+                existing_map[key] = val
+                print(f"  ~ [{month}] {key!r}  {existing.get('nome_simplificado')!r} -> {val['nome_simplificado']!r}  ({val['categoria']})")
+                updated += 1
+
+        if added or updated:
+            _save_month_map(month, existing_map)
+            print(f"  merchant_maps/{month}.json: {added} adicionado(s), {updated} atualizado(s)\n")
+            total_added   += added
+            total_updated += updated
+
+    if total_added or total_updated:
+        print(f"Total: {total_added} adicionado(s), {total_updated} atualizado(s)")
+    else:
+        print("Nenhuma entrada nova. merchant_maps/ não alterado.")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Atualiza merchant_map.json a partir dos JSONs gold"
+        description="Sincroniza gold JSONs → merchant_maps/YYYY-MM.json"
     )
-    parser.add_argument("--owner", help="Filtrar por owner (ex: person1, person2)")
+    parser.add_argument("--owner", help="Filtrar por owner (ex: victor, ana)")
     parser.add_argument("--month", help="Filtrar por mês (ex: 2026-01)")
     args = parser.parse_args()
     update(owner_filter=args.owner, month_filter=args.month)
