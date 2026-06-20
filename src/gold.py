@@ -17,14 +17,33 @@ import pandas as pd
 
 SILVER_ROOT       = Path("data/silver")
 GOLD_ROOT         = Path("data/gold")
-MERCHANT_MAP_PATH = Path("data/merchant_map.json")
+MERCHANT_MAPS_DIR = Path("data/merchant_maps")
+
+def _collect_categorias() -> list[str]:
+    """Coleta categorias únicas de todos os merchant_maps em ordem cronológica de aparição."""
+    seen: list[str] = []
+    if MERCHANT_MAPS_DIR.exists():
+        for path in sorted(MERCHANT_MAPS_DIR.glob("????-??.json")):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for entry in data.get("mapeamentos", {}).values():
+                cat = entry.get("categoria")
+                if cat and cat != "Pendente" and cat not in seen:
+                    seen.append(cat)
+    if not seen:
+        return ["Outro"]
+    if "Outro" not in seen:
+        seen.append("Outro")
+    return seen
 
 
-def _load_merchant_map() -> dict:
-    if not MERCHANT_MAP_PATH.exists():
-        return {"mapeamentos": {}, "categorias_validas": []}
-    with MERCHANT_MAP_PATH.open(encoding="utf-8") as f:
-        return json.load(f)
+def _load_merchant_maps() -> dict:
+    """Merge todos os mapas mensais em ordem cronológica; mês mais recente ganha."""
+    if not MERCHANT_MAPS_DIR.exists():
+        return {}
+    merged: dict[str, dict] = {}
+    for path in sorted(MERCHANT_MAPS_DIR.glob("????-??.json")):
+        merged.update(json.loads(path.read_text(encoding="utf-8")).get("mapeamentos", {}))
+    return merged
 
 
 def _match(nome_original: str, mappings: dict) -> tuple[str | None, str | None]:
@@ -67,7 +86,7 @@ def _situacao_fields(parcela, account_type: str) -> dict:
         return {"situacao": "avista"}
 
 
-def _build_month(month: str, frames: list[pd.DataFrame], categorias: list) -> dict:
+def _build_month(month: str, frames: list[pd.DataFrame]) -> dict:
     """Fase 1: silver → gold com nome_simplificado/categoria = null."""
     df = pd.concat(frames, ignore_index=True).sort_values(["data", "descricao"]).reset_index(drop=True)
     lancamentos = []
@@ -93,15 +112,14 @@ def _build_month(month: str, frames: list[pd.DataFrame], categorias: list) -> di
             "periodo":   {"inicio": f"{year}-{mon}-01", "fim": fim},
             "gerado_em": date.today().isoformat(),
         },
-        "categorias_validas": categorias,
+        "categorias_validas": _collect_categorias(),
         "lancamentos": lancamentos,
     }
 
 
 def apply_map(owner_filter: str | None = None, month_filter: str | None = None) -> None:
-    """Fase 2: aplica merchant_map.json nos JSONs gold existentes no disco."""
-    merchant = _load_merchant_map()
-    mappings = merchant.get("mapeamentos", {})
+    """Fase 2: aplica merchant_maps/ nos JSONs gold existentes no disco."""
+    mappings = _load_merchant_maps()
     if not mappings:
         return
 
@@ -114,7 +132,6 @@ def apply_map(owner_filter: str | None = None, month_filter: str | None = None) 
             continue
 
         data = json.loads(json_path.read_text(encoding="utf-8"))
-        updated = 0
         for entry in data.get("lancamentos", []):
             needs_simpl = entry.get("nome_simplificado") in (None, "Pendente")
             needs_cat   = entry.get("categoria") in (None, "Pendente")
@@ -123,19 +140,27 @@ def apply_map(owner_filter: str | None = None, month_filter: str | None = None) 
             nome_simpl, categoria = _match(entry.get("nome_original", ""), mappings)
             if needs_simpl and nome_simpl not in (None, "Pendente"):
                 entry["nome_simplificado"] = nome_simpl
-                updated += 1
             if needs_cat and categoria not in (None, "Pendente"):
                 entry["categoria"] = categoria
 
         json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        mapeado = pendente = faltando = 0
+        for entry in data["lancamentos"]:
+            simpl = entry.get("nome_simplificado")
+            cat   = entry.get("categoria")
+            if simpl in (None, "Pendente"):
+                faltando += 1
+            elif cat in (None, "Pendente"):
+                pendente += 1
+            else:
+                mapeado += 1
+
         total = sum(e["valor"] for e in data["lancamentos"])
-        print(f"  [map] {json_path}  ({updated} mapeados | R$ {total:,.2f})")
+        print(f"  [map] {json_path}  ({mapeado} mapeados | {pendente} pendente | {faltando} faltando | R$ {total:,.2f})")
 
 
 def run(owner_filter: str | None = None, month_filter: str | None = None) -> None:
-    merchant   = _load_merchant_map()
-    categorias = merchant.get("categorias_validas", [])
-
     groups: dict = {}
     for csv_path in sorted(SILVER_ROOT.glob("*/*.csv")):
         owner = csv_path.parent.name
@@ -155,7 +180,7 @@ def run(owner_filter: str | None = None, month_filter: str | None = None) -> Non
 
     for (owner, month), csv_paths in sorted(groups.items()):
         frames = [pd.read_csv(p, sep=";", encoding="utf-8-sig") for p in csv_paths]
-        data   = _build_month(month, frames, categorias)
+        data   = _build_month(month, frames)
         out    = GOLD_ROOT / owner / f"{month}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
