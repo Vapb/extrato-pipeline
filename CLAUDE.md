@@ -5,15 +5,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running the pipeline
 
 ```bash
-# Full pipeline (bronze + silver), all owners
-python src/pipeline.py
+# Scripts por camada
+bash scripts/10_bronze.sh [--owner X]
+bash scripts/20_silver.sh [--owner X]
+bash scripts/30_gold.sh   [--owner X] [--month YYYY-MM]
+bash scripts/40_sync_map.sh [--owner X] [--month YYYY-MM]
 
-# Filter by owner or layer
-python src/pipeline.py --owner person1
-python src/pipeline.py --layer bronze
+# Pipeline completa (bronze → silver → gold)
+bash scripts/00_full.sh [--owner X] [--month YYYY-MM]
 
-# Shorthand shell script (passes args through)
-bash scripts/run_pipeline.sh --owner person1
+# Ou direto via Python
+python src/pipeline.py --owner person1 --layer bronze
 ```
 
 Run from the **project root** — all paths are relative (`data/`, `src/`).
@@ -40,17 +42,27 @@ Each extractor exposes a single function `parse_markdown(text: str, competencia:
 - **`itau_credito.py`** — most complex; see quirks below
 
 ### `src/gold.py` — Silver → Gold
-Lê todos os silver CSVs de um owner/mês, aplica `data/merchant_map.json` por substring match, e escreve um JSON consolidado em `data/gold/{owner}/{YYYY-MM}.json`.
+Lê todos os silver CSVs de um owner/mês, aplica `data/merchant_maps/` por substring match, e escreve um JSON consolidado em `data/gold/{owner}/{YYYY-MM}.json`.
 
 **Fluxo de enriquecimento manual:**
 ```bash
-python src/pipeline.py --layer gold          # gera JSONs (null onde sem match)
-# editar manualmente os null nos JSONs gold
-bash scripts/sync_merchant_map.sh            # propaga preenchimentos → merchant_map.json
-python src/pipeline.py --layer gold          # regenera: entradas agora auto-preenchidas
+bash scripts/30_gold.sh --month 2026-02      # gera JSON (Pendente onde sem match)
+# editar manualmente os Pendente no JSON gold
+bash scripts/40_sync_map.sh --month 2026-02  # propaga preenchimentos → merchant_maps/2026-02.json
+bash scripts/30_gold.sh --month 2026-02      # regenera: entradas agora auto-preenchidas
 ```
 
-`--sync-map` nunca adiciona entradas cujo `nome_original` bate em `merchant_map.nao_mapear` (marketplaces, farmácias, iFood — cada compra é única e deve ser preenchida manualmente).
+`40_sync_map.sh` só escreve entradas reais (não Pendente) e ignora entradas cujo `nome_original` bate em `data/merchant_maps/nao_mapear.json`.
+
+**Estrutura dos merchant maps:**
+```
+data/merchant_maps/
+  nao_mapear.json      ← substrings globais a nunca auto-mapear (editado manualmente)
+  2026-01.json         ← entradas reais extraídas do gold de janeiro
+  2026-02.json         ← entradas reais extraídas do gold de fevereiro
+  ...
+```
+O gold lê todos os arquivos `YYYY-MM.json` em ordem cronológica; mês mais recente ganha. Quando a mesma chave aparece com valores diferentes entre meses, o sync loga `[DUP]`.
 
 ### `src/silver.py` — Bronze → Silver
 Groups bronze CSVs by `(owner, bank, competencia)`, merges debito+credito for the same bank/month, normalises to the unified schema, and outputs one CSV per bank per month.

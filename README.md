@@ -2,11 +2,51 @@
 
 Converte extratos bancários em PDF em JSONs estruturados e categorizados por mês.
 
-## Arquitetura
+## Fluxograma
+
+### Pipeline principal
 
 ```
-PDF → Markdown → Bronze → Silver → Gold
+┌──────────────┐         ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+│  raw_data/   │         │   bronze/    │         │   silver/    │         │    gold/     │
+│    *.pdf     │───────▶│    *.csv     │────────▶│    *.csv     │────────▶│   *.json     │
+└──────────────┘         └──────────────┘         └──────────────┘         └──────────────┘
+                          10_bronze.sh              20_silver.sh              30_gold.sh
 ```
+
+`bash scripts/00_full.sh [--owner X] [--month YYYY-MM]` roda as três camadas em sequência.
+
+### Ciclo de enriquecimento manual
+
+```
+                     ┌────────────────────────────────────────┐
+                     │             gold/*.json                │
+                     │                                        │
+                     │  ✓  mapeados  — nome + categoria ok    │
+                     │  ~  pendente  — nome ok, sem categoria │
+                     │  ✗  faltando  — sem mapeamento         │
+                     └─────────────────┬──────────────────────┘
+                                       │
+                                1. editar JSON
+                                (pendente / faltando)
+                                       │
+                                       ▼
+                     ┌────────────────────────────────────────┐
+                     │          merchant_maps/                │
+                     │          YYYY-MM.json                  │◀── 40_sync_map.sh
+                     └─────────────────┬──────────────────────┘
+                                       │
+                                2. regenerar gold
+                                  30_gold.sh
+                                       │
+                                       ▼
+                     ┌────────────────────────────────────────┐
+                     │             gold/*.json                │
+                     │       (entradas auto-preenchidas)      │
+                     └────────────────────────────────────────┘
+```
+
+## Estrutura de dados
 
 ```
 data/
@@ -14,36 +54,27 @@ data/
   bronze/{owner}/{bank}/{account_type}/*.csv     ← um CSV por conta/mês
   silver/{owner}/*.csv                           ← schema unificado
   gold/{owner}/{YYYY-MM}.json                    ← saída final
-  merchant_map.json                              ← mapeamento de merchants
+  merchant_maps/
+    nao_mapear.json                              ← substrings a nunca auto-mapear
+    {YYYY-MM}.json                               ← mapeamentos por mês
 ```
 
 ## Comandos
 
 ```bash
-# Pipeline completo
-python src/pipeline.py
+# Pipeline completa
+bash scripts/00_full.sh
+bash scripts/00_full.sh --owner person
+bash scripts/00_full.sh --owner person --month 2026-02
 
-# Filtros
-python src/pipeline.py --owner person1
-python src/pipeline.py --layer bronze|silver|gold
-python src/pipeline.py --layer gold --owner person1 --month 2026-01
-
-# Re-aplicar merchant_map sem reler o silver
-python src/pipeline.py --layer apply-map --owner person1 --month 2026-01
+# Camadas individuais
+bash scripts/10_bronze.sh [--owner X]
+bash scripts/20_silver.sh [--owner X]
+bash scripts/30_gold.sh   [--owner X] [--month YYYY-MM]
+bash scripts/40_sync_map.sh [--owner X] [--month YYYY-MM]
 ```
 
-> `--month` só filtra gold e apply-map. Bronze e silver processam todos os meses do owner.
-
-## Fluxo de enriquecimento
-
-```bash
-python src/pipeline.py --layer gold    # gera JSONs (novos lançamentos = "Pendente")
-python src/merchant_map.py             # registra todos no merchant_map
-# editar merchant_map.json — trocar "Pendente" por valores reais
-python src/pipeline.py --layer apply-map   # propaga para os JSONs gold
-```
-
-`apply-map` só atualiza entradas ainda com `"Pendente"` — valores preenchidos manualmente são preservados.
+> `--month` só filtra gold e sync_map. Bronze e silver processam todos os meses do owner.
 
 ## Schema do Gold
 
@@ -68,21 +99,23 @@ python src/pipeline.py --layer apply-map   # propaga para os JSONs gold
 
 Lançamentos ordenados por `data`, depois `nome_original`. Crédito à vista tem `situacao: "avista"` sem campos de parcela. Débito não tem `situacao`.
 
-## merchant_map.json
+## merchant_maps/
 
-Chave = substring do `nome_original` (case-insensitive). `_source` registra qual arquivo gold introduziu a entrada.
+Cada arquivo `YYYY-MM.json` contém os mapeamentos extraídos do gold daquele mês. Chave = substring do `nome_original` (case-insensitive). Ao aplicar, todos os arquivos são lidos em ordem cronológica — mês mais recente prevalece.
 
 ```json
 {
+  "mes": "2026-01",
   "mapeamentos": {
     "AOMORI TIJUCA": {
       "nome_simplificado": "Aomori",
-      "categoria": "Restaurante",
-      "_source": "person1/2026-01"
+      "categoria": "Restaurante"
     }
   }
 }
 ```
+
+`nao_mapear.json` lista substrings que nunca devem ser auto-mapeadas (marketplaces, farmácias, iFood — cada compra é única).
 
 ## Adicionar novo banco
 
