@@ -16,20 +16,8 @@ from pathlib import Path
 
 GOLD_ROOT         = Path("data/gold")
 MERCHANT_MAPS_DIR = Path("data/merchant_maps")
-NAO_MAPEAR_PATH   = MERCHANT_MAPS_DIR / "nao_mapear.json"
 
 _INSTALLMENT_RE = re.compile(r"\s*\d{2}/\d{2}$")
-
-
-def _load_nao_mapear() -> list[str]:
-    if not NAO_MAPEAR_PATH.exists():
-        return []
-    return json.loads(NAO_MAPEAR_PATH.read_text(encoding="utf-8")).get("nao_mapear", [])
-
-
-def _is_nao_mapear(key: str, nao_mapear: list[str]) -> bool:
-    low = key.lower()
-    return any(entry.lower() in low for entry in nao_mapear)
 
 
 def _load_month_map(month: str) -> dict:
@@ -49,8 +37,6 @@ def _save_month_map(month: str, mapeamentos: dict) -> None:
 
 
 def update(owner_filter: str | None = None, month_filter: str | None = None) -> None:
-    nao_mapear = _load_nao_mapear()
-
     # Coleta entradas reais dos gold JSONs, agrupadas por mês
     by_month: dict[str, dict[str, dict]] = {}
 
@@ -72,7 +58,7 @@ def update(owner_filter: str | None = None, month_filter: str | None = None) -> 
                 continue
 
             key = _INSTALLMENT_RE.sub("", nome_orig).strip()
-            if not key or _is_nao_mapear(key, nao_mapear):
+            if not key:
                 continue
 
             by_month.setdefault(month, {})[key] = {
