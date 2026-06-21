@@ -22,13 +22,14 @@ Run from the **project root** — all paths are relative (`data/`, `src/`).
 
 ## Architecture
 
-Medallion pipeline: **PDF → Markdown → Bronze → Silver**
+Medallion pipeline: **PDF → Markdown → Bronze → Silver → Gold**
 
 ```
 data/raw_data/{owner}/{bank}/{account_type}/*.pdf   ← source PDFs (gitignored)
 data/markdown/{owner}/{bank}/{account_type}/*.md    ← cached Markdown (gitignored)
 data/bronze/{owner}/{bank}/{account_type}/*.csv     ← extracted, one file per month per account type
 data/silver/{owner}/*.csv                           ← unified schema, debito+credito merged per bank/month
+data/gold/{owner}/{YYYY-MM}.csv                     ← enriched, one file per owner per month
 ```
 
 ### `src/bronze.py` — PDF → Bronze
@@ -42,12 +43,14 @@ Each extractor exposes a single function `parse_markdown(text: str, competencia:
 - **`itau_credito.py`** — most complex; see quirks below
 
 ### `src/gold.py` — Silver → Gold
-Lê todos os silver CSVs de um owner/mês, aplica `data/merchant_maps/` por substring match, e escreve um JSON consolidado em `data/gold/{owner}/{YYYY-MM}.json`.
+Lê todos os silver CSVs de um owner/mês, aplica `data/merchant_maps/` por substring match, e escreve um CSV consolidado em `data/gold/{owner}/{YYYY-MM}.csv`.
+
+**Gold schema:** `data, nome_original, nome_simplificado, categoria, valor, origem, situacao, parcela_atual, parcelas_total`
 
 **Fluxo de enriquecimento manual:**
 ```bash
-bash scripts/30_gold.sh --month 2026-02      # gera JSON (Pendente onde sem match)
-# editar manualmente os Pendente no JSON gold
+bash scripts/30_gold.sh --month 2026-02      # gera CSV (Pendente onde sem match)
+# editar manualmente os Pendente no CSV gold (Excel/Sheets)
 bash scripts/40_sync_map.sh --month 2026-02  # propaga preenchimentos → merchant_maps/2026-02.json
 bash scripts/30_gold.sh --month 2026-02      # regenera: entradas agora auto-preenchidas
 ```
