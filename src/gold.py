@@ -33,8 +33,25 @@ def _load_merchant_maps() -> dict:
     if not MERCHANT_MAPS_DIR.exists():
         return {}
     merged: dict[str, dict] = {}
-    for path in sorted(MERCHANT_MAPS_DIR.glob("????-??.json")):
-        merged.update(json.loads(path.read_text(encoding="utf-8")).get("mapeamentos", {}))
+    seen: set[str] = set()
+    for ext in ("csv", "json"):
+        for path in sorted(MERCHANT_MAPS_DIR.glob(f"????-??.{ext}")):
+            if path.stem in seen:
+                continue
+            seen.add(path.stem)
+            if ext == "csv":
+                df = pd.read_csv(path, sep=";", encoding="utf-8-sig", keep_default_na=False)
+                month_map = {
+                    str(r["nome_original"]): {
+                        "nome_simplificado": str(r["nome_simplificado"]),
+                        "categoria": str(r["categoria"]),
+                    }
+                    for _, r in df.iterrows()
+                    if str(r.get("nome_original", ""))
+                }
+            else:
+                month_map = json.loads(path.read_text(encoding="utf-8")).get("mapeamentos", {})
+            merged.update(month_map)
     return merged
 
 

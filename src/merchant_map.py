@@ -1,7 +1,7 @@
 """
-Sincroniza gold CSVs → merchant_maps/YYYY-MM.json
+Sincroniza gold CSVs → merchant_maps/YYYY-MM.csv
 
-Só escreve entradas reais (não Pendente). Entradas em nao_mapear.json são ignoradas.
+Só escreve entradas reais (não Pendente, não template vazio).
 Detecta quando a mesma chave aparece com valores diferentes em meses distintos.
 
 Uso:
@@ -23,19 +23,36 @@ _INSTALLMENT_RE = re.compile(r"\s*\d{2}/\d{2}$")
 
 
 def _load_month_map(month: str) -> dict:
-    path = MERCHANT_MAPS_DIR / f"{month}.json"
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8")).get("mapeamentos", {})
+    csv_path = MERCHANT_MAPS_DIR / f"{month}.csv"
+    if csv_path.exists():
+        df = pd.read_csv(csv_path, sep=";", encoding="utf-8-sig", keep_default_na=False)
+        return {
+            str(r["nome_original"]): {
+                "nome_simplificado": str(r["nome_simplificado"]),
+                "categoria": str(r["categoria"]),
+            }
+            for _, r in df.iterrows()
+            if str(r.get("nome_original", ""))
+        }
+    json_path = MERCHANT_MAPS_DIR / f"{month}.json"
+    if json_path.exists():
+        return json.loads(json_path.read_text(encoding="utf-8")).get("mapeamentos", {})
     return {}
 
 
 def _save_month_map(month: str, mapeamentos: dict) -> None:
     MERCHANT_MAPS_DIR.mkdir(parents=True, exist_ok=True)
-    path = MERCHANT_MAPS_DIR / f"{month}.json"
-    path.write_text(
-        json.dumps({"mes": month, "mapeamentos": mapeamentos}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    csv_path = MERCHANT_MAPS_DIR / f"{month}.csv"
+    rows = [
+        {"nome_original": k, "nome_simplificado": v["nome_simplificado"], "categoria": v["categoria"]}
+        for k, v in sorted(mapeamentos.items())
+    ]
+    pd.DataFrame(rows, columns=["nome_original", "nome_simplificado", "categoria"]).to_csv(
+        csv_path, sep=";", index=False, encoding="utf-8-sig"
     )
+    json_path = MERCHANT_MAPS_DIR / f"{month}.json"
+    if json_path.exists():
+        json_path.unlink()
 
 
 def update(owner_filter: str | None = None, month_filter: str | None = None) -> None:
@@ -74,11 +91,14 @@ def update(owner_filter: str | None = None, month_filter: str | None = None) -> 
         print("Nenhuma entrada real encontrada nos gold JSONs.")
         return
 
-    # Carrega todos os mapas existentes para detecção de conflitos
-    all_existing: dict[str, dict] = {
-        path.stem: json.loads(path.read_text(encoding="utf-8")).get("mapeamentos", {})
-        for path in sorted(MERCHANT_MAPS_DIR.glob("????-??.json"))
-    }
+    # Carrega todos os mapas existentes (CSV ou JSON legado) para detecção de conflitos
+    seen: set[str] = set()
+    all_existing: dict[str, dict] = {}
+    for ext in ("csv", "json"):
+        for path in sorted(MERCHANT_MAPS_DIR.glob(f"????-??.{ext}")):
+            if path.stem not in seen:
+                seen.add(path.stem)
+                all_existing[path.stem] = _load_month_map(path.stem)
 
     total_added = total_updated = 0
 
@@ -124,7 +144,7 @@ def update(owner_filter: str | None = None, month_filter: str | None = None) -> 
 
         if added or updated:
             _save_month_map(month, existing_map)
-            print(f"  merchant_maps/{month}.json: {added} adicionado(s), {updated} atualizado(s)\n")
+            print(f"  merchant_maps/{month}.csv: {added} adicionado(s), {updated} atualizado(s)\n")
             total_added   += added
             total_updated += updated
 
