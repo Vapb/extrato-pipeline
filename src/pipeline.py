@@ -27,11 +27,11 @@ def main():
 
     if args.layer in (None, "bronze"):
         print("=== Bronze ===")
-        bronze.run(owner_filter=args.owner)
+        bronze.run(owner_filter=args.owner, month_filter=args.month)
 
     if args.layer in (None, "silver"):
         print("\n=== Silver ===")
-        silver.run(owner_filter=args.owner)
+        silver.run(owner_filter=args.owner, month_filter=args.month)
 
     if args.layer in (None, "gold"):
         print("\n=== Gold ===")

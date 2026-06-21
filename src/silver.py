@@ -69,7 +69,7 @@ def _normalize(df: pd.DataFrame, owner: str, bank: str, account_type: str, comp:
     return df[SILVER_COLS]
 
 
-def run(owner_filter: str | None = None) -> None:
+def run(owner_filter: str | None = None, month_filter: str | None = None) -> None:
     # agrupa todos os CSVs bronze por (owner, bank, competencia) para mesclar debito+credito
     groups: dict = {}
 
@@ -85,6 +85,9 @@ def run(owner_filter: str | None = None) -> None:
             print(f"[SKIP] Nome inesperado: {csv_path.name}")
             continue
         comp = f"{m.group(1)}-{m.group(2)}"
+
+        if month_filter and comp != month_filter:
+            continue
 
         groups.setdefault((owner, bank, comp), []).append((csv_path, account_type))
 

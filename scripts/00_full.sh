@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Roda toda a pipeline: bronze → silver → gold → sync_map
 # --owner X   filtra por owner em todas as camadas
-# --month YYYY-MM   só afeta o gold
+# --month YYYY-MM   filtra bronze, silver e gold para o mês especificado
 set -euo pipefail
 
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"

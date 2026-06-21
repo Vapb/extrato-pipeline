@@ -56,7 +56,9 @@ def update(owner_filter: str | None = None, month_filter: str | None = None) -> 
             nome_simpl = str(entry.get("nome_simplificado", "")) or "Pendente"
             categoria  = str(entry.get("categoria", "")) or "Pendente"
 
-            if not nome_orig or nome_simpl == "Pendente" or categoria == "Pendente":
+            simpl_real = nome_simpl not in ("", "Pendente") and not nome_simpl.endswith("()")
+            cat_real   = categoria not in ("", "Pendente")
+            if not nome_orig or not simpl_real or not cat_real:
                 continue
 
             key = _INSTALLMENT_RE.sub("", nome_orig).strip()
@@ -85,14 +87,22 @@ def update(owner_filter: str | None = None, month_filter: str | None = None) -> 
         added = updated = 0
 
         for key, val in sorted(new_entries.items()):
-            # Detecta conflito com outros meses
+            # Detecta conflito com outros meses (ignora templates em qualquer lado)
             for other_month, other_map in all_existing.items():
                 if other_month == month:
                     continue
                 other_val = other_map.get(key)
-                if other_val and other_val != val:
+                if not other_val or other_val == val:
+                    continue
+                other_simpl = other_val.get("nome_simplificado", "")
+                other_cat   = other_val.get("categoria", "")
+                other_real  = (
+                    other_simpl not in ("", "Pendente")
+                    and other_cat not in ("", "Pendente")
+                )
+                if other_real:
                     print(
-                        f"  [DUP] {key!r}: {other_val['nome_simplificado']!r} ({other_month})"
+                        f"  [DUP] {key!r}: {other_simpl!r} ({other_month})"
                         f" vs {val['nome_simplificado']!r} ({month})"
                     )
 
@@ -100,8 +110,8 @@ def update(owner_filter: str | None = None, month_filter: str | None = None) -> 
             simpl = (existing or {}).get("nome_simplificado") or ""
             cat   = (existing or {}).get("categoria") or ""
             existing_is_pendente = existing is None or (
-                simpl in (None, "Pendente") or simpl.endswith("()")
-                or cat in (None, "Pendente")
+                simpl in (None, "", "Pendente")
+                or cat in (None, "", "Pendente")
             )
             if existing is None:
                 existing_map[key] = val

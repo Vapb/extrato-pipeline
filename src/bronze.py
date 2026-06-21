@@ -40,10 +40,15 @@ def _pdf_to_markdown(pdf_path: Path, md_path: Path) -> str:
     return md
 
 
-def _save(df: pd.DataFrame, owner: str, bank: str, account_type: str) -> None:
+def _save(df: pd.DataFrame, owner: str, bank: str, account_type: str, month_filter: str | None = None) -> None:
     df = df.copy()
     if "competencia" not in df.columns:
         df["competencia"] = pd.to_datetime(df["data"], dayfirst=True).dt.strftime("%Y-%m")
+
+    if month_filter:
+        df = df[df["competencia"] == month_filter]
+        if df.empty:
+            return
 
     for comp, group in df.groupby("competencia"):
         year_month = comp.replace("-", "_")
@@ -60,7 +65,7 @@ def _save(df: pd.DataFrame, owner: str, bank: str, account_type: str) -> None:
         )
 
 
-def run(owner_filter: str | None = None) -> None:
+def run(owner_filter: str | None = None, month_filter: str | None = None) -> None:
     pdfs = sorted(LANDING_ROOT.glob("*/*/*/*.pdf"))
     if not pdfs:
         print(f"[WARN] Nenhum PDF encontrado em {LANDING_ROOT}")
@@ -73,12 +78,15 @@ def run(owner_filter: str | None = None) -> None:
         if owner_filter and owner != owner_filter:
             continue
 
+        comp = _competencia_from_path(pdf)
+        if month_filter and comp and comp != month_filter:
+            continue
+
         key = (bank, account_type)
         if key not in EXTRACTORS:
             print(f"[SKIP] Sem extractor para {bank}/{account_type} ({pdf.name})")
             continue
 
-        comp    = _competencia_from_path(pdf)
         md_path = MARKDOWN_ROOT / owner / bank / account_type / pdf.with_suffix(".md").name
 
         text = _pdf_to_markdown(pdf, md_path)
@@ -86,7 +94,7 @@ def run(owner_filter: str | None = None) -> None:
         if df.empty:
             print(f"  [WARN] Sem transações: {pdf.name}")
             continue
-        _save(df, owner, bank, account_type)
+        _save(df, owner, bank, account_type, month_filter=month_filter)
 
 
 def main():
