@@ -1,5 +1,5 @@
 """
-Sincroniza gold JSONs → merchant_maps/YYYY-MM.json
+Sincroniza gold CSVs → merchant_maps/YYYY-MM.json
 
 Só escreve entradas reais (não Pendente). Entradas em nao_mapear.json são ignoradas.
 Detecta quando a mesma chave aparece com valores diferentes em meses distintos.
@@ -13,6 +13,8 @@ import argparse
 import json
 import re
 from pathlib import Path
+
+import pandas as pd
 
 GOLD_ROOT         = Path("data/gold")
 MERCHANT_MAPS_DIR = Path("data/merchant_maps")
@@ -37,22 +39,22 @@ def _save_month_map(month: str, mapeamentos: dict) -> None:
 
 
 def update(owner_filter: str | None = None, month_filter: str | None = None) -> None:
-    # Coleta entradas reais dos gold JSONs, agrupadas por mês
+    # Coleta entradas reais dos gold CSVs, agrupadas por mês
     by_month: dict[str, dict[str, dict]] = {}
 
-    for json_path in sorted(GOLD_ROOT.glob("*/*.json")):
-        owner = json_path.parent.name
+    for csv_path in sorted(GOLD_ROOT.glob("*/*.csv")):
+        owner = csv_path.parent.name
         if owner_filter and owner != owner_filter:
             continue
-        month = json_path.stem
+        month = csv_path.stem
         if month_filter and month != month_filter:
             continue
 
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-        for entry in data.get("lancamentos", []):
-            nome_orig  = entry.get("nome_original", "")
-            nome_simpl = entry.get("nome_simplificado") or "Pendente"
-            categoria  = entry.get("categoria") or "Pendente"
+        df = pd.read_csv(csv_path, sep=";", encoding="utf-8-sig", keep_default_na=False)
+        for _, entry in df.iterrows():
+            nome_orig  = str(entry.get("nome_original", ""))
+            nome_simpl = str(entry.get("nome_simplificado", "")) or "Pendente"
+            categoria  = str(entry.get("categoria", "")) or "Pendente"
 
             if not nome_orig or nome_simpl == "Pendente" or categoria == "Pendente":
                 continue
