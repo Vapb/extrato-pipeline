@@ -95,11 +95,17 @@ def update(owner_filter: str | None = None, month_filter: str | None = None) -> 
                     )
 
             existing = existing_map.get(key)
+            simpl = (existing or {}).get("nome_simplificado") or ""
+            cat   = (existing or {}).get("categoria") or ""
+            existing_is_pendente = existing is None or (
+                simpl in (None, "Pendente") or simpl.endswith("()")
+                or cat in (None, "Pendente")
+            )
             if existing is None:
                 existing_map[key] = val
                 print(f"  + [{month}] {key!r}  ->  {val['nome_simplificado']!r}  ({val['categoria']})")
                 added += 1
-            elif existing != val:
+            elif existing_is_pendente and existing != val:
                 existing_map[key] = val
                 print(f"  ~ [{month}] {key!r}  {existing.get('nome_simplificado')!r} -> {val['nome_simplificado']!r}  ({val['categoria']})")
                 updated += 1

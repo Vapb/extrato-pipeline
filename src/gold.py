@@ -182,6 +182,28 @@ def run(owner_filter: str | None = None, month_filter: str | None = None) -> Non
         frames = [pd.read_csv(p, sep=";", encoding="utf-8-sig") for p in csv_paths]
         data   = _build_month(month, frames)
         out    = GOLD_ROOT / owner / f"{month}.json"
+
+        # Preserva edições manuais do gold existente por (data, nome_original, valor).
+        # Cada campo é preservado independentemente: se só categoria está preenchida,
+        # mantém a categoria e deixa apply_map preencher o nome_simplificado, e vice-versa.
+        if out.exists():
+            prev = json.loads(out.read_text(encoding="utf-8"))
+            manual: dict[tuple, dict] = {}
+            for e in prev.get("lancamentos", []):
+                simpl = e.get("nome_simplificado")
+                cat   = e.get("categoria")
+                to_keep = {}
+                if simpl not in (None, "Pendente"):
+                    to_keep["nome_simplificado"] = simpl
+                if cat not in (None, "Pendente"):
+                    to_keep["categoria"] = cat
+                if to_keep:
+                    manual[(e["data"], e["nome_original"], e["valor"])] = to_keep
+            for entry in data["lancamentos"]:
+                key = (entry["data"], entry["nome_original"], entry["valor"])
+                if key in manual:
+                    entry.update(manual[key])
+
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         total = sum(e["valor"] for e in data["lancamentos"])
