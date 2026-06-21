@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 
+import metadata
+
 BRONZE_ROOT = Path("data/bronze")
 SILVER_ROOT = Path("data/silver")
 
@@ -104,6 +106,10 @@ def run(owner_filter: str | None = None) -> None:
         merged.to_csv(out, index=False, sep=";", encoding="utf-8-sig")
         total = merged["valor"].sum()
         print(f"  -> {out}  ({len(merged)} linhas | R$ {total:,.2f})")
+        metadata.update(
+            layer="silver", owner=owner, bank=bank,
+            month=comp, n_linhas=len(merged), total_valor=float(total),
+        )
 
 
 def main():

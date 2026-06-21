@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pymupdf4llm
 
+import metadata
 from extractors import itau_credito, itau_debito, santander_debito
 
 LANDING_ROOT  = Path("data/raw_data")
@@ -53,6 +54,10 @@ def _save(df: pd.DataFrame, owner: str, bank: str, account_type: str) -> None:
         g.to_csv(out, index=False, sep=";", encoding="utf-8-sig")
         total = group["valor"].sum()
         print(f"  -> {out}  ({len(group)} linhas | R$ {total:,.2f})")
+        metadata.update(
+            layer="bronze", owner=owner, bank=bank, account_type=account_type,
+            month=comp, n_linhas=len(group), total_valor=float(total),
+        )
 
 
 def run(owner_filter: str | None = None) -> None:
