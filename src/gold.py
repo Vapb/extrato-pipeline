@@ -4,12 +4,11 @@ Saída: data/gold/{owner}/{YYYY-MM}.csv
 
 Fluxo de enriquecimento:
   1. run()            — silver → gold (nome_simplificado/categoria = Pendente)
-  2. apply_map()      — lê gold existente e aplica merchant_map.json
+  2. apply_map()      — lê gold existente e aplica merchant_maps/
   run() chama apply_map() no final, então pipeline.py --layer gold faz os dois.
   pipeline.py --layer apply-map executa apenas a fase 2 (sem reler o silver).
 """
 import argparse
-import json
 from pathlib import Path
 
 import pandas as pd
@@ -33,25 +32,16 @@ def _load_merchant_maps() -> dict:
     if not MERCHANT_MAPS_DIR.exists():
         return {}
     merged: dict[str, dict] = {}
-    seen: set[str] = set()
-    for ext in ("csv", "json"):
-        for path in sorted(MERCHANT_MAPS_DIR.glob(f"????-??.{ext}")):
-            if path.stem in seen:
-                continue
-            seen.add(path.stem)
-            if ext == "csv":
-                df = pd.read_csv(path, sep=";", encoding="utf-8-sig", keep_default_na=False)
-                month_map = {
-                    str(r["nome_original"]): {
-                        "nome_simplificado": str(r["nome_simplificado"]),
-                        "categoria": str(r["categoria"]),
-                    }
-                    for _, r in df.iterrows()
-                    if str(r.get("nome_original", ""))
-                }
-            else:
-                month_map = json.loads(path.read_text(encoding="utf-8")).get("mapeamentos", {})
-            merged.update(month_map)
+    for path in sorted(MERCHANT_MAPS_DIR.glob("????-??.csv")):
+        df = pd.read_csv(path, sep=";", encoding="utf-8-sig", keep_default_na=False)
+        merged.update({
+            str(r["nome_original"]): {
+                "nome_simplificado": str(r["nome_simplificado"]),
+                "categoria": str(r["categoria"]),
+            }
+            for _, r in df.iterrows()
+            if str(r.get("nome_original", ""))
+        })
     return merged
 
 
@@ -105,25 +95,6 @@ def _read_gold(path: Path) -> pd.DataFrame:
 def _write_gold(df: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, sep=SEP, index=False, encoding="utf-8-sig")
-
-
-def _json_to_df(json_path: Path) -> pd.DataFrame:
-    """Migração única: converte gold JSON legado para DataFrame compatível com o CSV."""
-    data = json.loads(json_path.read_text(encoding="utf-8"))
-    rows = []
-    for e in data.get("lancamentos", []):
-        rows.append({
-            "data":              e.get("data", ""),
-            "nome_original":     e.get("nome_original", ""),
-            "nome_simplificado": e.get("nome_simplificado") or "Pendente",
-            "categoria":         e.get("categoria") or "Pendente",
-            "valor":             str(e.get("valor", "")),
-            "origem":            e.get("origem", ""),
-            "situacao":          e.get("situacao", ""),
-            "parcela_atual":     str(e["parcela_atual"]) if "parcela_atual" in e else "",
-            "parcelas_total":    str(e["parcelas_total"]) if "parcelas_total" in e else "",
-        })
-    return pd.DataFrame(rows, columns=GOLD_COLS) if rows else pd.DataFrame(columns=GOLD_COLS)
 
 
 def _build_month(frames: list[pd.DataFrame]) -> pd.DataFrame:
@@ -241,13 +212,7 @@ def run(owner_filter: str | None = None, month_filter: str | None = None) -> Non
         df     = _build_month(frames)
         out    = GOLD_ROOT / owner / f"{month}.csv"
 
-        # Preserva edições manuais do gold existente por (data, nome_original, valor).
-        # Fallback para JSON na primeira execução após migração.
-        prev = None
-        if out.exists():
-            prev = _read_gold(out)
-        elif (json_out := out.with_suffix(".json")).exists():
-            prev = _json_to_df(json_out)
+        prev = _read_gold(out) if out.exists() else None
 
         if prev is not None:
             manual = _extract_manual(prev)

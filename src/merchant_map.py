@@ -1,7 +1,7 @@
 """
 Sincroniza gold CSVs → merchant_maps/YYYY-MM.csv
 
-Só escreve entradas reais (não Pendente, não template vazio).
+Só escreve entradas reais (não Pendente).
 Detecta quando a mesma chave aparece com valores diferentes em meses distintos.
 
 Uso:
@@ -10,7 +10,6 @@ Uso:
     python src/merchant_map.py --month 2026-01
 """
 import argparse
-import json
 import re
 from pathlib import Path
 
@@ -24,39 +23,43 @@ _INSTALLMENT_RE = re.compile(r"\s*\d{2}/\d{2}$")
 
 def _load_month_map(month: str) -> dict:
     csv_path = MERCHANT_MAPS_DIR / f"{month}.csv"
-    if csv_path.exists():
-        df = pd.read_csv(csv_path, sep=";", encoding="utf-8-sig", keep_default_na=False)
-        return {
-            str(r["nome_original"]): {
-                "nome_simplificado": str(r["nome_simplificado"]),
-                "categoria": str(r["categoria"]),
-            }
-            for _, r in df.iterrows()
-            if str(r.get("nome_original", ""))
+    if not csv_path.exists():
+        return {}
+    df = pd.read_csv(csv_path, sep=";", encoding="utf-8-sig", keep_default_na=False)
+    return {
+        str(r["nome_original"]): {
+            "nome_simplificado": str(r["nome_simplificado"]),
+            "categoria": str(r["categoria"]),
         }
-    json_path = MERCHANT_MAPS_DIR / f"{month}.json"
-    if json_path.exists():
-        return json.loads(json_path.read_text(encoding="utf-8")).get("mapeamentos", {})
-    return {}
+        for _, r in df.iterrows()
+        if str(r.get("nome_original", ""))
+    }
 
 
 def _save_month_map(month: str, mapeamentos: dict) -> None:
     MERCHANT_MAPS_DIR.mkdir(parents=True, exist_ok=True)
-    csv_path = MERCHANT_MAPS_DIR / f"{month}.csv"
     rows = [
         {"nome_original": k, "nome_simplificado": v["nome_simplificado"], "categoria": v["categoria"]}
         for k, v in sorted(mapeamentos.items())
     ]
     pd.DataFrame(rows, columns=["nome_original", "nome_simplificado", "categoria"]).to_csv(
-        csv_path, sep=";", index=False, encoding="utf-8-sig"
+        MERCHANT_MAPS_DIR / f"{month}.csv", sep=";", index=False, encoding="utf-8-sig"
     )
-    json_path = MERCHANT_MAPS_DIR / f"{month}.json"
-    if json_path.exists():
-        json_path.unlink()
+
+
+def _is_real(entry: dict | None) -> bool:
+    if not entry:
+        return False
+    simpl = entry.get("nome_simplificado", "")
+    cat   = entry.get("categoria", "")
+    return (
+        simpl not in ("", "Pendente")
+        and not simpl.endswith("()")
+        and cat not in ("", "Pendente")
+    )
 
 
 def update(owner_filter: str | None = None, month_filter: str | None = None) -> None:
-    # Coleta entradas reais dos gold CSVs, agrupadas por mês
     by_month: dict[str, dict[str, dict]] = {}
 
     for csv_path in sorted(GOLD_ROOT.glob("*/*.csv")):
@@ -73,77 +76,53 @@ def update(owner_filter: str | None = None, month_filter: str | None = None) -> 
             nome_simpl = str(entry.get("nome_simplificado", "")) or "Pendente"
             categoria  = str(entry.get("categoria", "")) or "Pendente"
 
-            simpl_real = nome_simpl not in ("", "Pendente") and not nome_simpl.endswith("()")
-            cat_real   = categoria not in ("", "Pendente")
-            if not nome_orig or not simpl_real or not cat_real:
+            val = {"nome_simplificado": nome_simpl, "categoria": categoria}
+            if not nome_orig or not _is_real(val):
                 continue
 
             key = _INSTALLMENT_RE.sub("", nome_orig).strip()
-            if not key:
-                continue
-
-            by_month.setdefault(month, {})[key] = {
-                "nome_simplificado": nome_simpl,
-                "categoria": categoria,
-            }
+            if key:
+                by_month.setdefault(month, {})[key] = val
 
     if not by_month:
-        print("Nenhuma entrada real encontrada nos gold JSONs.")
+        print("Nenhuma entrada real encontrada nos gold CSVs.")
         return
 
-    # Carrega todos os mapas existentes (CSV ou JSON legado) para detecção de conflitos
-    seen: set[str] = set()
-    all_existing: dict[str, dict] = {}
-    for ext in ("csv", "json"):
-        for path in sorted(MERCHANT_MAPS_DIR.glob(f"????-??.{ext}")):
-            if path.stem not in seen:
-                seen.add(path.stem)
-                all_existing[path.stem] = _load_month_map(path.stem)
+    all_existing: dict[str, dict] = {
+        path.stem: _load_month_map(path.stem)
+        for path in sorted(MERCHANT_MAPS_DIR.glob("????-??.csv"))
+    }
 
     total_added = total_updated = 0
 
     for month, new_entries in sorted(by_month.items()):
-        existing_map = _load_month_map(month)
+        existing_map = all_existing.get(month, {})
         added = updated = 0
 
         for key, val in sorted(new_entries.items()):
-            # Detecta conflito com outros meses (ignora templates em qualquer lado)
             for other_month, other_map in all_existing.items():
                 if other_month == month:
                     continue
                 other_val = other_map.get(key)
-                if not other_val or other_val == val:
-                    continue
-                other_simpl = other_val.get("nome_simplificado", "")
-                other_cat   = other_val.get("categoria", "")
-                other_real  = (
-                    other_simpl not in ("", "Pendente")
-                    and other_cat not in ("", "Pendente")
-                )
-                if other_real:
+                if other_val and other_val != val and _is_real(other_val):
                     print(
-                        f"  [DUP] {key!r}: {other_simpl!r} ({other_month})"
+                        f"  [DUP] {key!r}: {other_val['nome_simplificado']!r} ({other_month})"
                         f" vs {val['nome_simplificado']!r} ({month})"
                     )
 
             existing = existing_map.get(key)
-            simpl = (existing or {}).get("nome_simplificado") or ""
-            cat   = (existing or {}).get("categoria") or ""
-            existing_is_pendente = existing is None or (
-                simpl in (None, "", "Pendente")
-                or cat in (None, "", "Pendente")
-            )
             if existing is None:
                 existing_map[key] = val
                 print(f"  + [{month}] {key!r}  ->  {val['nome_simplificado']!r}  ({val['categoria']})")
                 added += 1
-            elif existing_is_pendente and existing != val:
+            elif not _is_real(existing):
                 existing_map[key] = val
                 print(f"  ~ [{month}] {key!r}  {existing.get('nome_simplificado')!r} -> {val['nome_simplificado']!r}  ({val['categoria']})")
                 updated += 1
 
         if added or updated:
             _save_month_map(month, existing_map)
+            all_existing[month] = existing_map
             print(f"  merchant_maps/{month}.csv: {added} adicionado(s), {updated} atualizado(s)\n")
             total_added   += added
             total_updated += updated
@@ -156,7 +135,7 @@ def update(owner_filter: str | None = None, month_filter: str | None = None) -> 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Sincroniza gold JSONs → merchant_maps/YYYY-MM.json"
+        description="Sincroniza gold CSVs → merchant_maps/YYYY-MM.csv"
     )
     parser.add_argument("--owner", help="Filtrar por owner (ex: victor, ana)")
     parser.add_argument("--month", help="Filtrar por mês (ex: 2026-01)")
